@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.log
+checkpoint_stage1.json
+wbrera_*.xlsx
+
+# Node
+rera-dashboard/node_modules/
+rera-dashboard/dist/
+
+# Env files
+.env
+.env.local
+rera-dashboard/.env.local
+
+# OS
+.DS_Store
