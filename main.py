@@ -70,7 +70,7 @@ app = FastAPI(title="WB-RERA Dashboard API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # tighten to your Render frontend URL in production
+    allow_origins=["https://rera-dashboard.onrender.com"],   # tighten to your Render frontend URL in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
