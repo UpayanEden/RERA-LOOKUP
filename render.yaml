@@ -1,0 +1,49 @@
+services:
+  # ── 1. FastAPI Backend ──────────────────────────────────────────────────────
+  - type: web
+    name: rera-api
+    runtime: python
+    rootDir: .
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MONGO_URI
+        sync: false          # set manually in Render dashboard
+      - key: JWT_SECRET
+        sync: false          # set manually in Render dashboard
+      - key: JWT_EXPIRE_MINUTES
+        value: "10080"
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+    healthCheckPath: /health
+    autoDeploy: true
+
+  # ── 2. React Frontend ───────────────────────────────────────────────────────
+  - type: web
+    name: rera-dashboard
+    runtime: static
+    rootDir: rera-dashboard
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false          # set to your rera-api Render URL after deploying API
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    autoDeploy: true
+
+  # ── 3. Scraper Background Worker ────────────────────────────────────────────
+  - type: worker
+    name: rera-scraper
+    runtime: python
+    rootDir: .
+    buildCommand: pip install -r requirements_scraper.txt
+    startCommand: python scraper_mongo.py
+    envVars:
+      - key: MONGO_URI
+        sync: false          # same value as rera-api
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+    autoDeploy: true
