@@ -15,6 +15,13 @@ const StarIcon = () => (
     <polygon points="8,2 10,6 14,6.5 11,9.5 11.8,14 8,12 4.2,14 5,9.5 2,6.5 6,6"/>
   </svg>
 );
+const MapIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <polygon points="1,3 5,1 11,3 15,1 15,13 11,15 5,13 1,15"/>
+    <line x1="5" y1="1" x2="5" y2="13"/>
+    <line x1="11" y1="3" x2="11" y2="15"/>
+  </svg>
+);
 const ActivityIcon = () => (
   <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
     <polyline points="1,11 5,7 8,9 11,4 15,6"/>
@@ -38,6 +45,7 @@ const MenuIcon = () => (
 const navItems = [
   { to: "/projects",   label: "Projects",   icon: GridIcon,     section: "Explore" },
   { to: "/favourites", label: "Favourites", icon: StarIcon,     section: null },
+  { to: "/map",        label: "Map",        icon: MapIcon,      section: null },
   { to: "/changes",    label: "Changes",    icon: ActivityIcon, section: "Monitor" },
 ];
 
@@ -68,7 +76,7 @@ function Sidebar({ onClose }) {
 
       {/* Nav */}
       <nav className="flex-1 px-2.5 py-3">
-        {navItems.map(({ to, label, icon: Icon, section }, i) => (
+        {navItems.map(({ to, label, icon: Icon, section }) => (
           <div key={to}>
             {section && (
               <p className="text-[10px] font-semibold text-[#bbb] tracking-[0.8px] uppercase px-2.5 pt-3 pb-1.5">
@@ -120,7 +128,7 @@ export default function Layout() {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      {/* Desktop */}
+      {/* Desktop sidebar */}
       <div className="hidden md:flex">
         <Sidebar onClose={() => {}} />
       </div>

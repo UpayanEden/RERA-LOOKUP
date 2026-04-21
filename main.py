@@ -50,7 +50,12 @@ from passlib.context import CryptContext
 from pymongo import MongoClient
 from pymongo.collection import Collection
 from pydantic import BaseModel, EmailStr, Field
+# from price_fetcher import fetch_live_prices
 from dotenv import load_dotenv
+# At top with other imports
+from io import BytesIO
+import pandas as pd
+from fastapi.responses import StreamingResponse
 
 load_dotenv()
 
@@ -70,7 +75,15 @@ app = FastAPI(title="WB-RERA Dashboard API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://rera-dashboard.onrender.com"],   # tighten to your Render frontend URL in production
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:5175",
+        "https://rera-dashboard.onrender.com",  # your Render URL
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -258,14 +271,53 @@ def list_projects(
         "pages":   -(-total // limit),
         "results": [serialize(d) for d in docs],
     }
+@app.get("/favourites/{pincode}/export", tags=["Favourites"])
+def export_pincode_excel(pincode: str, current_user: dict = Depends(get_current_user)):
+    """Download all projects under a pincode as Excel."""
+    docs = list(col_projects().find({"pincode": pincode}))
+    if not docs:
+        raise HTTPException(status_code=404, detail="No projects found")
+
+    COLS = [
+        "project_name", "developer", "rera_reg_no", "project_type",
+        "project_status", "pincode", "district", "police_station", "address",
+        "total_apartments", "apartments_booked", "unsold_units", "booking_rate_pct",
+        "land_area_sqm", "builtup_area_sqm", "carpet_area_sqm",
+        "covered_parking", "basement_parking", "mechanical_parking",
+        "completion_date", "extension_completion_date", "quarter_ending",
+        "update_date", "construction_status_summary", "details_url",
+    ]
+
+    rows = []
+    for doc in docs:
+        row = {col: doc.get(col) for col in COLS}
+        rows.append(row)
+
+    df = pd.DataFrame(rows, columns=COLS)
+    df.columns = [c.replace("_", " ").title() for c in df.columns]
+
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name=f"Pincode {pincode}", index=False)
+        # Auto-width columns
+        ws = writer.sheets[f"Pincode {pincode}"]
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or "")) for cell in col)
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 40)
+
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=RERA_{pincode}.xlsx"}
+    )
 
 
 @app.get("/projects/meta/filters", tags=["Projects"])
 def filter_options():
-    """Distinct values for pincode, district, and status — use to populate dropdowns."""
     col = col_projects()
     return {
-        "pincodes":  sorted(col.distinct("pincode")),
+        "pincodes":  sorted([p for p in col.distinct("pincode")  if p]),
         "districts": sorted([d for d in col.distinct("district") if d]),
         "statuses":  sorted([s for s in col.distinct("project_status") if s]),
     }
@@ -435,3 +487,253 @@ def health():
         "project_count": _db["projects"].estimated_document_count(),
         "timestamp":     datetime.now(timezone.utc).isoformat(),
     }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAP ROUTES — add these to main.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/map/projects", tags=["Map"])
+def map_projects(
+    pincode:  Optional[str] = Query(None),
+    district: Optional[str] = Query(None),
+    status:   Optional[str] = Query(None),
+    lat:      Optional[float] = Query(None, description="Center latitude for radius search"),
+    lon:      Optional[float] = Query(None, description="Center longitude for radius search"),
+    radius_km: float          = Query(5.0, description="Search radius in km"),
+):
+    """
+    Returns all geocoded projects as GeoJSON FeatureCollection.
+    Supports filtering by pincode, district, status, and radius around a point.
+    Each feature includes booking_rate_pct for color-coding pins.
+    """
+    col   = col_projects()
+    query = {"lat": {"$exists": True}, "geocode_failed": {"$ne": True}}
+
+    if pincode:
+        query["pincode"] = pincode
+    if district:
+        query["district"] = {"$regex": district, "$options": "i"}
+    if status:
+        query["project_status"] = {"$regex": status, "$options": "i"}
+
+    # Radius search using MongoDB $nearSphere
+    if lat is not None and lon is not None:
+        query["location"] = {
+            "$nearSphere": {
+                "$geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "$maxDistance": int(radius_km * 1000),  # metres
+            }
+        }
+
+    docs = list(col.find(
+        query,
+        {
+            "project_id": 1, "project_name": 1, "developer": 1,
+            "pincode": 1, "district": 1, "project_status": 1,
+            "project_type": 1, "total_apartments": 1,
+            "apartments_booked": 1, "booking_rate_pct": 1,
+            "lat": 1, "lon": 1, "address": 1, "rera_reg_no": 1,
+        },
+        limit=2000,   # cap to avoid huge payloads
+    ))
+
+    features = []
+    for doc in docs:
+        lat_val = doc.get("lat")
+        lon_val = doc.get("lon")
+        if lat_val is None or lon_val is None:
+            continue
+        features.append({
+            "type": "Feature",
+            "geometry": {
+                "type":        "Point",
+                "coordinates": [lon_val, lat_val],
+            },
+            "properties": {
+                "project_id":      doc["project_id"],
+                "project_name":    doc.get("project_name"),
+                "developer":       doc.get("developer"),
+                "pincode":         doc.get("pincode"),
+                "district":        doc.get("district"),
+                "project_status":  doc.get("project_status"),
+                "project_type":    doc.get("project_type"),
+                "total_apartments":doc.get("total_apartments"),
+                "apartments_booked":doc.get("apartments_booked"),
+                "booking_rate_pct":doc.get("booking_rate_pct"),
+                "address":         doc.get("address"),
+                "rera_reg_no":     doc.get("rera_reg_no"),
+            },
+        })
+
+    return {
+        "type":     "FeatureCollection",
+        "count":    len(features),
+        "features": features,
+    }
+
+
+@app.get("/map/geocode-status", tags=["Map"])
+def geocode_status():
+    """How many projects have been geocoded."""
+    col   = col_projects()
+    total = col.count_documents({})
+    geocoded = col.count_documents({"lat": {"$exists": True}, "geocode_failed": {"$ne": True}})
+    failed   = col.count_documents({"geocode_failed": True})
+    pending  = total - geocoded - failed
+    return {
+        "total":    total,
+        "geocoded": geocoded,
+        "failed":   failed,
+        "pending":  pending,
+        "pct_done": round(geocoded / total * 100, 1) if total else 0,
+    }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PROJECT FAVOURITES — add these to main.py alongside the pincode favourites
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/favourites/projects", tags=["Favourites"])
+def get_project_favourites(current_user: dict = Depends(get_current_user)):
+    """Returns the user's favourite projects with full detail."""
+    fav_ids = current_user.get("fav_projects", [])
+    if not fav_ids:
+        return {"favourites": []}
+
+    docs = list(col_projects().find(
+        {"project_id": {"$in": fav_ids}},
+        {
+            "project_id": 1, "project_name": 1, "developer": 1,
+            "pincode": 1, "district": 1, "project_status": 1,
+            "total_apartments": 1, "apartments_booked": 1,
+            "booking_rate_pct": 1, "completion_date": 1,
+            "rera_reg_no": 1, "project_type": 1,
+        }
+    ))
+    return {"favourites": [serialize(d) for d in docs]}
+
+
+@app.post("/favourites/projects/{project_id}", response_model=Msg, tags=["Favourites"])
+def add_project_favourite(project_id: str, current_user: dict = Depends(get_current_user)):
+    if not col_projects().find_one({"project_id": project_id}):
+        raise HTTPException(status_code=404, detail="Project not found")
+    col_users().update_one(
+        {"email": current_user["email"]},
+        {"$addToSet": {"fav_projects": project_id}},
+    )
+    return {"message": f"Project {project_id} added to favourites"}
+
+
+@app.delete("/favourites/projects/{project_id}", response_model=Msg, tags=["Favourites"])
+def remove_project_favourite(project_id: str, current_user: dict = Depends(get_current_user)):
+    col_users().update_one(
+        {"email": current_user["email"]},
+        {"$pull": {"fav_projects": project_id}},
+    )
+    return {"message": f"Project {project_id} removed from favourites"}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LIVE PRICE ENDPOINT — add to main.py
+# ─────────────────────────────────────────────────────────────────────────────
+# At top of main.py add:
+#   # from price_fetcher import fetch_live_prices
+#   import asyncio
+
+@app.get("/prices/{project_id}", tags=["Prices"])
+async def get_prices(project_id: str):
+    """
+    Fetch live prices for a project from 99acres and Housing.com.
+    Returns cached result if fetched within last 24 hours.
+    First call takes 10-20 seconds (live scrape).
+    Subsequent calls within 24hrs are instant (cache).
+    """
+    doc = col_projects().find_one(
+        {"project_id": project_id},
+        {"project_name": 1, "pincode": 1}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_name = doc.get("project_name") or ""
+    pincode      = doc.get("pincode") or ""
+
+    if not project_name or not pincode:
+        raise HTTPException(status_code=422, detail="Project has no name or pincode")
+
+    try:
+        result = await fetch_live_prices(
+            project_id   = project_id,
+            project_name = project_name,
+            pincode      = pincode,
+            db           = _db,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Price fetch failed: {str(e)}")
+
+
+@app.get("/prices/pincode/{pincode}", tags=["Prices"])
+def get_prices_by_pincode(
+    pincode: str,
+    bhk: Optional[int] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    """Returns cached price data for all projects in a pincode."""
+    docs = list(_db["prices"].find({"pincode": pincode}))
+    results = []
+    for doc in docs:
+        agg = doc.get("aggregated") or []
+        if bhk:
+            agg = [a for a in agg if a.get("bhk") == bhk]
+        if agg:
+            results.append({
+                "project_id":    doc["project_id"],
+                "project_name":  doc.get("project_name"),
+                "listing_count": doc.get("listing_count", 0),
+                "last_fetched":  doc.get("last_fetched_at").isoformat() if doc.get("last_fetched_at") else None,
+                "aggregated":    agg,
+            })
+    return {"pincode": pincode, "project_count": len(results), "results": results}
+
+
+@app.get("/projects/{project_id}/booking-history", tags=["Projects"])
+def booking_history(project_id: str):
+    """Returns booking timeline from changes collection."""
+    changes = list(
+        _db["changes"].find(
+            {"project_id": project_id, "field": "apartments_booked"},
+            {"old_value": 1, "new_value": 1, "changed_at": 1}
+        ).sort("changed_at", 1)
+    )
+    # Build timeline — start from first known value
+    timeline = []
+    for c in changes:
+        changed_at = c["changed_at"]
+        if changed_at.tzinfo is None:
+            changed_at = changed_at.replace(tzinfo=__import__('datetime').timezone.utc)
+        timeline.append({
+            "date":      changed_at.isoformat(),
+            "old_value": c.get("old_value"),
+            "new_value": c.get("new_value"),
+        })
+    return {"project_id": project_id, "timeline": timeline}
+
+@app.get("/projects/{project_id}/booking-history", tags=["Projects"])
+def booking_history(project_id: str):
+    changes = list(
+        _db["changes"].find(
+            {"project_id": project_id, "field": "apartments_booked"},
+            {"old_value": 1, "new_value": 1, "changed_at": 1}
+        ).sort("changed_at", 1)
+    )
+    from datetime import timezone as tz
+    timeline = []
+    for c in changes:
+        changed_at = c["changed_at"]
+        if changed_at.tzinfo is None:
+            changed_at = changed_at.replace(tzinfo=tz.utc)
+        timeline.append({
+            "date":      changed_at.isoformat(),
+            "old_value": c.get("old_value"),
+            "new_value": c.get("new_value"),
+        })
+    return {"project_id": project_id, "timeline": timeline}

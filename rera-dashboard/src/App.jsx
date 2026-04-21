@@ -8,6 +8,7 @@ import ProjectsPage from "./pages/ProjectsPage";
 import ProjectDetailPage from "./pages/ProjectDetailPage";
 import FavouritesPage from "./pages/FavouritesPage";
 import ChangesPage from "./pages/ChangesPage";
+import MapPage from "./pages/MapPage";
 
 function ProtectedRoute({ children }) {
   const { user } = useAuth();
@@ -23,19 +24,22 @@ export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <Toaster position="top-right" />
+        <Toaster
+          position="top-right"
+          toastOptions={{
+            style: { fontFamily: "'DM Sans', sans-serif", fontSize: "13px" },
+          }}
+        />
         <Routes>
-          {/* Public */}
           <Route path="/login"    element={<PublicRoute><LoginPage /></PublicRoute>} />
           <Route path="/register" element={<PublicRoute><RegisterPage /></PublicRoute>} />
-
-          {/* Protected — wrapped in shared Layout */}
           <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-            <Route index                       element={<Navigate to="/projects" replace />} />
-            <Route path="/projects"            element={<ProjectsPage />} />
-            <Route path="/projects/:id"        element={<ProjectDetailPage />} />
-            <Route path="/favourites"          element={<FavouritesPage />} />
-            <Route path="/changes"             element={<ChangesPage />} />
+            <Route index                element={<Navigate to="/projects" replace />} />
+            <Route path="/projects"     element={<ProjectsPage />} />
+            <Route path="/projects/:id" element={<ProjectDetailPage />} />
+            <Route path="/favourites"   element={<FavouritesPage />} />
+            <Route path="/changes"      element={<ChangesPage />} />
+            <Route path="/map"          element={<MapPage />} />
           </Route>
         </Routes>
       </BrowserRouter>
