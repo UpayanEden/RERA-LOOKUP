@@ -31,37 +31,7 @@ const KOLKATA = [22.5726, 88.3639];
 const DEF_KM  = 3;
 const LOAD_DEBOUNCE_MS = 400;
 
-// Load Leaflet + MarkerCluster once globally
-let libsLoaded = false;
-function loadLibs() {
-  return new Promise((resolve) => {
-    if (window.L?.markerClusterGroup) { resolve(); return; }
-    if (libsLoaded) {
-      const w = setInterval(() => { if (window.L?.markerClusterGroup) { clearInterval(w); resolve(); } }, 50);
-      return;
-    }
-    libsLoaded = true;
-    const addLink = (id, href) => {
-      if (document.getElementById(id)) return;
-      const l = document.createElement("link");
-      l.id = id; l.rel = "stylesheet"; l.href = href;
-      document.head.appendChild(l);
-    };
-    addLink("leaflet-css",  "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css");
-    addLink("cluster-css",  "https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.css");
-    addLink("cluster-css2", "https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.Default.css");
 
-    const s1 = document.createElement("script");
-    s1.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-    s1.onload = () => {
-      const s2 = document.createElement("script");
-      s2.src = "https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js";
-      s2.onload = resolve;
-      document.body.appendChild(s2);
-    };
-    document.body.appendChild(s1);
-  });
-}
 
 // Build cluster group with consistent styling
 function makeClusterGroup(L) {
@@ -157,7 +127,7 @@ export default function MapPage() {
       setViewCount(data.count);
 
       const L = window.L;
-      const newCluster = makeClusterGroup(L);
+      const newCluster = L.layerGroup();
 
       data.features.forEach(({ geometry, properties: p }) => {
         const [lon, lat] = geometry.coordinates;
