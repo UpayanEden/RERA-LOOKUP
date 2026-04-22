@@ -546,87 +546,149 @@ def upsert_projects(db, records: list[dict]):
 # GEOCODER — runs after upsert, geocodes new projects only
 # ──────────────────────────────────────────────────────────────────────────────
 def geocode_new_projects(db):
-    """Geocode any projects that don't have lat/lon yet using Nominatim (free)."""
-    col      = db[COLLECTION_PROJECTS]
-    query    = {"lat": {"$exists": False}, "geocode_failed": {"$ne": True}}
-    projects = list(col.find(query, {"project_id": 1, "address": 1, "pincode": 1, "district": 1}))
+    """Geocode any projects missing lat/lon using v2 multi-strategy approach."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    col   = db["projects"]
+    query = {
+        "$or": [
+            {"lat": {"$exists": False}},
+            {"geocode_failed": True},
+            # Re-geocode city-center stuck coordinates
+            {"lat": {"$gt": 22.570, "$lt": 22.575},
+             "lon": {"$gt": 88.360, "$lt": 88.368}},
+        ]
+    }
+    projects = list(col.find(query,
+        {"project_id":1,"address":1,"pincode":1,"district":1,"police_station":1}))
 
     if not projects:
-        log.info("GEOCODER | no new projects to geocode")
+        log.info("GEOCODER | nothing to geocode")
         return
 
     log.info("GEOCODER START | projects=%d", len(projects))
-    session = make_session()
-    session.headers.update({"User-Agent": "WB-RERA-Dashboard/1.0 (educational project)"})
 
+    # Pre-load pincode cache
+    pin_cache  = {}
+    cache_lock = threading.Lock()
+    for doc in col.find(
+        {"lat":{"$exists":True},"geocode_failed":{"$ne":True}},
+        {"pincode":1,"lat":1,"lon":1}
+    ):
+        pin = doc.get("pincode")
+        lat, lon = doc.get("lat"), doc.get("lon")
+        if pin and lat and lon:
+            if not (22.570 < lat < 22.575 and 88.360 < lon < 88.368):
+                pin_cache.setdefault(pin, (lat, lon))
+
+    sess_local = threading.local()
+
+    def get_sess():
+        if not hasattr(sess_local, "s"):
+            s = make_session()
+            s.verify = True
+            s.headers.update({"User-Agent": "WB-RERA-Dashboard/2.0"})
+            sess_local.s = s
+        return sess_local.s
+
+    def nom(query_str=None, structured=None):
+        time.sleep(1.1)
+        try:
+            s = get_sess()
+            params = {**(structured or {"q": query_str}),
+                      "format":"json","limit":1,"countrycodes":"in","addressdetails":0}
+            r = s.get("https://nominatim.openstreetmap.org/search",
+                       params=params, timeout=10, verify=True)
+            data = r.json()
+            if data:
+                lat, lon = float(data[0]["lat"]), float(data[0]["lon"])
+                if not (22.570 < lat < 22.575 and 88.360 < lon < 88.368):
+                    return lat, lon
+        except Exception as e:
+            log.debug("nom error: %s", e)
+        return None
+
+    def geocode_one(p):
+        pid     = p["project_id"]
+        pincode = (p.get("pincode") or "").strip()
+        address = (p.get("address") or "").strip()
+        district= (p.get("district") or "").strip()
+        ps      = (p.get("police_station") or "").strip()
+        result  = None
+        strategy= None
+
+        # 1. Cache
+        if pincode:
+            with cache_lock:
+                cached = pin_cache.get(pincode)
+            if cached:
+                return pid, cached[0], cached[1], "cache"
+
+        # 2. Structured pincode
+        if pincode:
+            r = nom(structured={"postalcode":pincode,"country":"India","state":"West Bengal"})
+            if r:
+                result, strategy = r, "pincode"
+                with cache_lock: pin_cache[pincode] = r
+
+        # 3. Address + pincode
+        if not result and address and pincode:
+            r = nom(f"{address[:80]}, {pincode}, West Bengal, India")
+            if r: result, strategy = r, "address"
+
+        # 4. Police station + district
+        if not result and ps and district:
+            r = nom(f"{ps}, {district}, West Bengal, India")
+            if r:
+                result, strategy = r, "ps_district"
+                if pincode:
+                    with cache_lock: pin_cache.setdefault(pincode, r)
+
+        # 5. District
+        if not result and district:
+            r = nom(f"{district}, West Bengal, India")
+            if r: result, strategy = r, "district"
+
+        if result:
+            return pid, result[0], result[1], strategy
+        return pid, None, None, "failed"
+
+    ops     = []
     success = 0
     failed  = 0
-    ops     = []
+    now     = datetime.now(timezone.utc)
 
-    for project in projects:
-        pid      = project["project_id"]
-        address  = project.get("address")  or ""
-        pincode  = project.get("pincode")  or ""
-        district = project.get("district") or ""
-
-        queries = []
-        if address and pincode:
-            queries.append(f"{address}, {pincode}, West Bengal, India")
-        if pincode and district:
-            queries.append(f"{district}, {pincode}, West Bengal, India")
-        if pincode:
-            queries.append(f"{pincode}, West Bengal, India")
-
-        result = None
-        for query in queries:
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = {ex.submit(geocode_one, p): p for p in projects}
+        for i, fut in enumerate(as_completed(futures), 1):
             try:
-                time.sleep(1.1)   # Nominatim rate limit: 1 req/sec
-                resp = session.get(
-                    "https://nominatim.openstreetmap.org/search",
-                    params={"q": query, "format": "json", "limit": 1, "countrycodes": "in"},
-                    timeout=10, verify=True,
-                )
-                data = resp.json()
-                if data:
-                    result = {"lat": float(data[0]["lat"]), "lon": float(data[0]["lon"])}
-                    break
+                pid, lat, lon, strategy = fut.result()
+                if lat and lon:
+                    success += 1
+                    ops.append(UpdateOne({"project_id": pid}, {"$set": {
+                        "lat": lat, "lon": lon,
+                        "geo_strategy": strategy,
+                        "geocode_failed": False,
+                        "geocoded_at": now,
+                        "location": {"type":"Point","coordinates":[lon, lat]},
+                    }}))
+                else:
+                    failed += 1
+                    ops.append(UpdateOne({"project_id": pid},
+                        {"$set": {"geocode_failed": True, "geocoded_at": now}}))
+
+                if len(ops) >= 50:
+                    col.bulk_write(ops, ordered=False)
+                    ops = []
+                    log.info("GEOCODER | done=%d/%d | ok=%d | fail=%d",
+                             i, len(projects), success, failed)
             except Exception as e:
-                log.debug("GEOCODE fail | pid=%s | %s", pid, e)
-
-        now = datetime.now(timezone.utc)
-        if result:
-            success += 1
-            ops.append(UpdateOne(
-                {"project_id": pid},
-                {"$set": {
-                    "lat":         result["lat"],
-                    "lon":         result["lon"],
-                    "geocoded_at": now,
-                    "location": {
-                        "type":        "Point",
-                        "coordinates": [result["lon"], result["lat"]],
-                    },
-                }},
-            ))
-            log.debug("GEOCODED | pid=%s | lat=%.4f lon=%.4f", pid, result["lat"], result["lon"])
-        else:
-            failed += 1
-            ops.append(UpdateOne(
-                {"project_id": pid},
-                {"$set": {"geocode_failed": True, "geocoded_at": now}},
-            ))
-            log.warning("GEOCODE FAILED | pid=%s | pin=%s", pid, pincode)
-
-        if len(ops) >= 50:
-            col.bulk_write(ops, ordered=False)
-            ops = []
-            log.info("GEOCODER PROGRESS | ok=%d | fail=%d", success, failed)
+                log.error("GEOCODER exception: %s", e)
 
     if ops:
         col.bulk_write(ops, ordered=False)
-
     log.info("GEOCODER END | success=%d | failed=%d", success, failed)
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # MAIN SCRAPE RUN
