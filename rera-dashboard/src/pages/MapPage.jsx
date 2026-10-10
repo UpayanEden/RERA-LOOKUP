@@ -623,26 +623,6 @@ export default function MapPage() {
           {circleInfo ? "Clear circle" : drawMode ? "Click map to place" : "Draw circle"}
         </button>
 
-        {circleInfo && (
-          <span className="text-[11px] text-muted shrink-0">
-            <span className="font-medium mono text-ink">{circleInfo.km} km</span>
-            {" "}· drag dot=resize · drag fill=move
-          </span>
-        )}
-
-        {circleInfo && (
-          <button
-            onClick={exportCircle}
-            disabled={exporting}
-            className="btn text-[11px] shrink-0 gap-1.5 bg-[#F0FDF4] text-[#166534] border-[#BBF7D0] hover:bg-[#DCFCE7] disabled:opacity-50"
-          >
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M3 12h10M8 3v7M5 7l3 3 3-3"/>
-            </svg>
-            {exporting ? "Exporting..." : `Export ${viewCount} projects`}
-          </button>
-        )}
-
         {/* Filters button */}
         <button
           onClick={() => setShowF((f) => !f)}
@@ -656,6 +636,31 @@ export default function MapPage() {
           Filters
         </button>
       </div>
+
+      {/* Circle active bar */}
+      {circleInfo && (
+        <div className="bg-[#EFF6FF] border-b border-[#BFDBFE] px-4 py-2 flex items-center gap-3 shrink-0">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#1d4ed8" strokeWidth="1.5">
+            <circle cx="8" cy="8" r="6"/>
+            <line x1="8" y1="2" x2="8" y2="5"/><line x1="8" y1="11" x2="8" y2="14"/>
+            <line x1="2" y1="8" x2="5" y2="8"/><line x1="11" y1="8" x2="14" y2="8"/>
+          </svg>
+          <span className="text-[12px] text-[#1d4ed8]">
+            <span className="font-semibold">{circleInfo.km} km</span>
+            {" "}radius · {viewCount.toLocaleString("en-IN")} projects · drag dot to resize · drag fill to move
+          </span>
+          <button
+            onClick={exportCircle}
+            disabled={exporting}
+            className="ml-auto btn text-[11px] shrink-0 gap-1.5 bg-white text-[#166534] border-[#BBF7D0] hover:bg-[#F0FDF4] disabled:opacity-50"
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M3 12h10M8 3v7M5 7l3 3 3-3"/>
+            </svg>
+            {exporting ? "Exporting..." : `Export ${viewCount} to Excel`}
+          </button>
+        </div>
+      )}
 
       {/* Filter bar */}
       {showF && (
