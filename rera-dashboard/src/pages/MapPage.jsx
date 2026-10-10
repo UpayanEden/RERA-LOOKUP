@@ -118,6 +118,7 @@ export default function MapPage() {
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggest, setShowSuggest] = useState(false);
   const [searching,   setSearching]   = useState(false);
+  const [exporting,   setExporting]   = useState(false);
 
   // ── Render markers into layer group ────────────────────────────────────────
   const renderMarkers = useCallback((features) => {
@@ -302,6 +303,35 @@ export default function MapPage() {
       S.current.map?.setView([parseFloat(d[0].lat), parseFloat(d[0].lon)], 13);
       placeCircle(parseFloat(d[0].lat), parseFloat(d[0].lon), DEF_KM);
     } catch { alert("Geocode failed"); }
+  };
+
+  // ── Export circle to Excel ─────────────────────────────────────────────────
+  const exportCircle = async () => {
+    const s = S.current;
+    if (!s.radiusParams) return;
+    setExporting(true);
+    try {
+      const params = new URLSearchParams({
+        lat:       s.radiusParams.lat,
+        lon:       s.radiusParams.lon,
+        radius_km: s.radiusParams.radius_km,
+        ...(s.statusFilter ? { status: s.statusFilter } : {}),
+      });
+      const token = localStorage.getItem("token");
+      const res   = await fetch(
+        `${import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"}/map/projects/export?${params}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!res.ok) { alert("No projects found in this area"); return; }
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = `RERA_circle_${parseFloat(s.radiusParams.radius_km).toFixed(1)}km.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch { alert("Export failed"); }
+    finally  { setExporting(false); }
   };
 
   // ── Autocomplete ────────────────────────────────────────────────────────────
@@ -548,6 +578,19 @@ export default function MapPage() {
             <span className="font-medium mono text-ink">{circleInfo.km} km</span>
             {" "}· drag dot=resize · drag fill=move
           </span>
+        )}
+
+        {circleInfo && (
+          <button
+            onClick={exportCircle}
+            disabled={exporting}
+            className="btn text-[11px] shrink-0 gap-1.5 bg-[#F0FDF4] text-[#166534] border-[#BBF7D0] hover:bg-[#DCFCE7] disabled:opacity-50"
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M3 12h10M8 3v7M5 7l3 3 3-3"/>
+            </svg>
+            {exporting ? "Exporting..." : `Export ${viewCount} projects`}
+          </button>
         )}
 
         {/* Filters button */}

@@ -10,6 +10,7 @@ Endpoints:
               GET/POST/DELETE /favourites/projects/{project_id}
   Changes:    GET /changes, GET /changes/summary
   Map:        GET /map/projects, GET /map/projects/bounds, GET /map/geocode-status
+              GET /map/projects/export
   Health:     GET /health
 """
 
@@ -556,6 +557,71 @@ def map_projects(
     docs     = list(col_projects().find(query, MAP_FIELDS))
     features = _to_geojson(docs)
     return {"type": "FeatureCollection", "count": len(features), "features": features}
+
+
+@app.get("/map/projects/export", tags=["Map"])
+def export_map_circle_excel(
+    lat:       Optional[float] = Query(None),
+    lon:       Optional[float] = Query(None),
+    radius_km: float           = Query(5.0),
+    status:    Optional[str]   = Query(None),
+    pincode:   Optional[str]   = Query(None),
+    district:  Optional[str]   = Query(None),
+    search:    Optional[str]   = Query(None),
+    current_user: dict         = Depends(get_current_user),
+):
+    """Download all projects within a map circle / radius as Excel."""
+    query = {"lat": {"$exists": True}, "geocode_failed": {"$ne": True}}
+    if pincode:  query["pincode"]        = pincode
+    if district: query["district"]       = {"$regex": district, "$options": "i"}
+    if status:   query["project_status"] = {"$regex": status,   "$options": "i"}
+    if search:
+        query["$or"] = [
+            {"project_name": {"$regex": search, "$options": "i"}},
+            {"developer":    {"$regex": search, "$options": "i"}},
+        ]
+    if lat is not None and lon is not None:
+        query["location"] = {
+            "$nearSphere": {
+                "$geometry":    {"type": "Point", "coordinates": [lon, lat]},
+                "$maxDistance": int(radius_km * 1000),
+            }
+        }
+
+    docs = list(col_projects().find(query))
+    if not docs:
+        raise HTTPException(status_code=404, detail="No projects found in this area")
+
+    COLS = [
+        "project_name", "developer", "rera_reg_no", "project_type",
+        "project_status", "pincode", "district", "police_station", "address",
+        "total_apartments", "apartments_booked", "unsold_units", "booking_rate_pct",
+        "land_area_sqm", "builtup_area_sqm", "carpet_area_sqm",
+        "covered_parking", "basement_parking", "mechanical_parking",
+        "completion_date", "extension_completion_date", "quarter_ending",
+        "update_date", "construction_status_summary", "details_url",
+    ]
+
+    rows = [{col: doc.get(col) for col in COLS} for doc in docs]
+    df   = pd.DataFrame(rows, columns=COLS)
+    df.columns = [c.replace("_", " ").title() for c in df.columns]
+
+    sheet = f"Circle {round(radius_km, 1)}km"
+    buf   = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name=sheet, index=False)
+        ws = writer.sheets[sheet]
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or "")) for cell in col)
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 40)
+    buf.seek(0)
+
+    fname = f"RERA_circle_{round(radius_km, 1)}km.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
+    )
 
 
 @app.get("/map/geocode-status", tags=["Map"])
