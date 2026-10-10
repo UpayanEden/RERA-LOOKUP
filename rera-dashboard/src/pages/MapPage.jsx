@@ -104,6 +104,7 @@ export default function MapPage() {
     statusFilter:    "",
     radiusParams:    null,   // {lat,lon,radius_km} when circle active
     searchQuery:     "",
+    addrQuery:       "",
   });
 
   const [loading,     setLoading]     = useState(false);
@@ -172,6 +173,7 @@ export default function MapPage() {
             zoom:   map.getZoom(),
             status: s.statusFilter || undefined,
             search: s.searchQuery  || undefined,
+            addr:   s.addrQuery    || undefined,
             ...extra,
           },
         });
@@ -253,7 +255,7 @@ export default function MapPage() {
     e?.preventDefault();
     setShowSuggest(false);
     const q = search.trim();
-    if (!q) { clearCircle(); S.current.searchQuery = ""; loadViewport(); return; }
+    if (!q) { clearCircle(); S.current.searchQuery = ""; S.current.addrQuery = ""; loadViewport(); return; }
 
     if (searchType === "project") {
       setSearching(true);
@@ -270,6 +272,27 @@ export default function MapPage() {
           setViewCount(data.count);
         } else {
           alert("No projects found");
+        }
+      } catch { alert("Search failed"); }
+      finally  { setSearching(false); }
+      return;
+    }
+
+    if (searchType === "address") {
+      setSearching(true);
+      try {
+        const { data } = await api.get("/map/projects/bounds", {
+          params: { addr: q, north: 90, south: -90, east: 180, west: -180 },
+        });
+        if (data.features?.length > 0) {
+          const first      = data.features[0];
+          const [lon, lat] = first.geometry.coordinates;
+          S.current.addrQuery = q;
+          highlightProject({ ...first.properties, lat, lon });
+          loadDebounced({ addr: q });
+          setViewCount(data.count);
+        } else {
+          alert("No projects found for that address");
         }
       } catch { alert("Search failed"); }
       finally  { setSearching(false); }
@@ -336,12 +359,13 @@ export default function MapPage() {
 
   // ── Autocomplete ────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (searchType !== "project" || search.length < 2) { setSuggestions([]); return; }
+    if (!["project", "address"].includes(searchType) || search.length < 2) { setSuggestions([]); return; }
     const t = setTimeout(async () => {
       try {
-        const { data } = await api.get("/map/projects/bounds", {
-          params: { search, north: 90, south: -90, east: 180, west: -180 },
-        });
+        const params = searchType === "address"
+          ? { addr: search, north: 90, south: -90, east: 180, west: -180 }
+          : { search, north: 90, south: -90, east: 180, west: -180 };
+        const { data } = await api.get("/map/projects/bounds", { params });
         setSuggestions((data.features || []).slice(0, 8));
       } catch { setSuggestions([]); }
     }, 300);
@@ -485,19 +509,21 @@ export default function MapPage() {
 
         {/* Search type toggle */}
         <div className="flex items-center bg-surface rounded-lg p-0.5 shrink-0">
-          {["location", "project"].map((t) => (
+          {["location", "project", "address"].map((t) => (
             <button key={t}
               onClick={() => {
                 setSearchType(t);
                 setSearch("");
                 setSuggestions([]);
                 S.current.searchQuery = "";
+                S.current.addrQuery   = "";
+                loadViewport();
               }}
               className={`px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors ${
                 searchType === t ? "bg-white text-ink shadow-sm" : "text-muted hover:text-ink"
               }`}
             >
-              {t === "location" ? "Location" : "Project name"}
+              {t === "location" ? "Location" : t === "project" ? "Project" : "Address"}
             </button>
           ))}
         </div>
@@ -514,7 +540,11 @@ export default function MapPage() {
               <input
                 type="text"
                 className="input pl-9 text-[12px]"
-                placeholder={searchType === "project" ? "Type project name..." : "Locality or 6-digit pincode..."}
+                placeholder={
+                  searchType === "project" ? "Type project name..." :
+                  searchType === "address" ? "District, police station or street..." :
+                  "Locality or 6-digit pincode..."
+                }
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); setShowSuggest(true); }}
                 onFocus={() => setShowSuggest(true)}
@@ -527,24 +557,44 @@ export default function MapPage() {
           </form>
 
           {/* Autocomplete dropdown */}
-          {searchType === "project" && showSuggest && suggestions.length > 0 && (
+          {["project", "address"].includes(searchType) && showSuggest && suggestions.length > 0 && (
             <div className="absolute top-full left-0 right-12 mt-1 bg-white border border-border rounded-xl shadow-lg z-[2000] overflow-hidden">
               {suggestions.map((f, i) => {
-                const p        = f.properties;
+                const p          = f.properties;
                 const [lon, lat] = f.geometry.coordinates;
                 return (
                   <div key={i}
                     className="px-3 py-2.5 hover:bg-surface cursor-pointer border-b border-[#f8f7f4] last:border-0"
                     onMouseDown={() => {
-                      setSearch(p.project_name || "");
-                      setShowSuggest(false);
-                      S.current.searchQuery = p.project_name || "";
-                      highlightProject({ ...p, lat, lon });
-                      loadDebounced({ search: p.project_name });
+                      if (searchType === "address") {
+                        const label = p.district || p.police_station || "";
+                        setSearch(label);
+                        setShowSuggest(false);
+                        S.current.addrQuery = label;
+                        highlightProject({ ...p, lat, lon });
+                        loadDebounced({ addr: label });
+                      } else {
+                        setSearch(p.project_name || "");
+                        setShowSuggest(false);
+                        S.current.searchQuery = p.project_name || "";
+                        highlightProject({ ...p, lat, lon });
+                        loadDebounced({ search: p.project_name });
+                      }
                     }}
                   >
-                    <p className="text-[12px] font-medium text-ink truncate">{p.project_name || "—"}</p>
-                    <p className="text-[10px] text-muted">{p.developer || "—"} · {p.pincode} · {p.district}</p>
+                    {searchType === "address" ? (
+                      <>
+                        <p className="text-[12px] font-medium text-ink truncate">
+                          {p.district || "—"}{p.police_station ? ` · ${p.police_station}` : ""}
+                        </p>
+                        <p className="text-[10px] text-muted">{p.project_name || "—"} · {p.pincode}</p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-[12px] font-medium text-ink truncate">{p.project_name || "—"}</p>
+                        <p className="text-[10px] text-muted">{p.developer || "—"} · {p.pincode} · {p.district}</p>
+                      </>
+                    )}
                   </div>
                 );
               })}

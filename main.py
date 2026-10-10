@@ -474,7 +474,7 @@ def changes_summary(current_user: dict = Depends(get_current_user)):
 # ─────────────────────────────────────────────
 MAP_FIELDS = {
     "project_id": 1, "project_name": 1, "developer": 1, "pincode": 1,
-    "district": 1, "project_status": 1, "project_type": 1,
+    "district": 1, "police_station": 1, "project_status": 1, "project_type": 1,
     "total_apartments": 1, "apartments_booked": 1, "booking_rate_pct": 1,
     "lat": 1, "lon": 1,
 }
@@ -503,11 +503,13 @@ def map_projects_bounds(
     west:   float          = Query(...),
     status: Optional[str]  = Query(None),
     search: Optional[str]  = Query(None),
+    addr:   Optional[str]  = Query(None),
     zoom:   int            = Query(10),
 ):
     """
     Returns geocoded projects within the current map viewport.
     Called on every pan/zoom — no limit needed since only visible area is queried.
+    `search` matches project_name/developer; `addr` matches address/district/police_station.
     """
     query = {
         "lat": {"$exists": True, "$gte": south, "$lte": north},
@@ -519,6 +521,12 @@ def map_projects_bounds(
         query["$or"] = [
             {"project_name": {"$regex": search, "$options": "i"}},
             {"developer":    {"$regex": search, "$options": "i"}},
+        ]
+    if addr:
+        query["$or"] = [
+            {"address":        {"$regex": addr, "$options": "i"}},
+            {"district":       {"$regex": addr, "$options": "i"}},
+            {"police_station": {"$regex": addr, "$options": "i"}},
         ]
 
     docs     = list(col_projects().find(query, MAP_FIELDS))
